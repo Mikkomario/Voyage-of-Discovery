@@ -1,6 +1,31 @@
 package vf.voyage.model.context
 
 import utopia.echo.model.LlmDesignator
+import utopia.flow.generic.model.immutable.{Model, ModelDeclaration}
+import utopia.flow.generic.model.template.{ModelConvertible, ModelLike, Property}
+import utopia.flow.generic.casting.ValueConversions._
+import utopia.flow.generic.casting.ValueUnwraps._
+import utopia.flow.generic.factory.FromModelFactory
+import utopia.flow.generic.model.mutable.DataType.{ModelType, StringType}
+import vf.voyage.model.enumeration.GfRole
+
+import scala.util.Try
+
+object Gf extends FromModelFactory[Gf]
+{
+	// ATTRIBUTES   --------------------
+	
+	private lazy val schema = ModelDeclaration("llm" -> StringType, "name" -> StringType, "player" -> ModelType)
+	
+	
+	// IMPLEMENTED  --------------------
+	
+	override def apply(model: ModelLike[Property]): Try[Gf] = schema.validate(model).flatMap { model =>
+		Player(model("player").getModel).map { player =>
+			apply(LlmDesignator(model("llm")), model("name"), player, GfRole.forName(model("role").getString))
+		}
+	}
+}
 
 /**
  * Contains information about the game's facilitator (GF), played by an LLM
@@ -10,16 +35,15 @@ import utopia.echo.model.LlmDesignator
  * @author Mikko Hilpinen
  * @since 04.09.2024, v0.1
  */
-case class Gf(llm: LlmDesignator, name: String, player: Player) extends LlmDesignator
+case class Gf(llm: LlmDesignator, name: String, player: Player, role: GfRole)
+	extends LlmDesignator with ModelConvertible
 {
 	// ATTRIBUTES -------------------------
 	
 	/**
 	 * @return An instruction to give to the LLM on how to play their role as the GF.
 	 */
-	lazy val systemMessage = s"Your name is $name. You are a facilitator of a role-playing game. User's name is $player and ${
-		player.gender.pronoun}'s playing the game. Your role is to make ${
-		player.gender.pronounPossessive } role-playing experience interesting and immersive."
+	lazy val systemMessage = s"Your name is $name. ${ role.systemMessage(player) }"
 	
 	
 	// IMPLEMENTED  ----------------------
@@ -27,4 +51,14 @@ case class Gf(llm: LlmDesignator, name: String, player: Player) extends LlmDesig
 	override def llmName: String = llm.llmName
 	
 	override def toString = name
+	override def toModel: Model = Model.from("llm" -> llmName, "name" -> name, "player" -> player, "role" -> role.name)
+	
+	
+	// OTHER    ---------------------------
+	
+	/**
+	 * @param role New role to assign to this GF
+	 * @return Copy of this GF with the specified role
+	 */
+	def withRole(role: GfRole) = copy(role = role)
 }

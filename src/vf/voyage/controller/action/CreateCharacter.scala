@@ -32,7 +32,7 @@ object CreateCharacter
 	private val newCharacterRegex = Regex("CHAR") + Regex.escape(':')
 	
 	private val nameWrapperRegex = Regex.escape('$')
-	private val nameRegex = nameWrapperRegex + Regex.any + nameWrapperRegex
+	private val nameRegex = nameWrapperRegex + !nameWrapperRegex + Regex.any + nameWrapperRegex
 	
 	
 	// OTHER    ----------------------------
@@ -70,10 +70,14 @@ object CreateCharacter
 					.tryFlatMapSuccess(parseNameIdeas).waitForResult() match
 				{
 					case Success(nameIdeas) =>
-						println("\nI hope you like these ideas. Feel free to come up with your own as well.")
-						// FIXME: Name-parsing didn't work. Also, this suggested more titles than names (title is not a bad idea, though)
-						StdIn.selectFromOrAdd(nameIdeas.map { n => n -> n }, "names") {
-							StdIn.readNonEmptyLine("Please name your character") }
+						// TODO: Add a familiar name once it has a purpose in the game
+						if (nameIdeas.isEmpty)
+							StdIn.readNonEmptyLine("\nOkay. Write the name you like the best. And feel free to create a new one if you want to.")
+						else {
+							println("\nI hope you like these ideas. Feel free to come up with your own as well.")
+							StdIn.selectFromOrAdd(nameIdeas.map { n => n -> n }, "names") {
+								StdIn.readNonEmptyLine("Please name your character") }
+						}
 					
 					case Failure(error) =>
 						log(error, "Failed to generate name ideas")
@@ -85,16 +89,12 @@ object CreateCharacter
 	private def brainstormCharacterCreation()(implicit gf: Gf): Option[String] = {
 		println(s"Give me some inspiration by writing some words that may relate to your character.")
 		StdIn.readNonEmptyLine().flatMap { inspiration =>
-			println(s"\nLet's see if I can come up with any ideas...")
+			println(s"\nInspiring! Let's see what I can come up with...")
 			ollama.generate(s"Come up with 5 different ideas for my role-playing character. Here are some words that may relate to these characters: $inspiration. Start the description of each character with \"$newCharacterIndicator\". Also, don't name the character at this point. I will name them later.")
 				.tryFlatMapSuccess(parseCharacterIdeas).waitForResult() match
 			{
 				case Success(characters) =>
-					// TODO: Remove test
-					println(s"\nTest: Found ${ characters.size } characters")
-					characters.zipWithIndex.foreach { case (c, i) => println(s"$i: $c") }
-					
-					println("\nHow do you like these? We can always edit the one you choose, if you want.")
+					println("\n\nHow do you like these? We can always edit the one you choose, if you want.")
 					StdIn.selectFrom(Vector(
 							1 -> "Nice. I will pick one of these.",
 							2 -> "I think I will rather write my own character",
@@ -102,8 +102,6 @@ object CreateCharacter
 						.flatMap {
 							// Case: Selecting from AI-generated characters
 							case 1 =>
-								// TODO: Remove the "found 5 options" strings
-								// TODO: Cut character descriptions on some special character
 								println("Okay. Which character would you like to continue with?")
 								StdIn.selectFrom(characters
 										.map { c => c -> s"${ c.linesIterator.next().take(140).untilLast(".") }..." })
@@ -218,7 +216,8 @@ object CreateCharacter
 		reply.printAsReceived { _.replaceEachMatchOf(nameWrapperRegex, "") }
 		// Once read, parses the names from the reply
 		reply.future.mapIfSuccess { reply =>
-			nameRegex.matchesIteratorFrom(reply.text).map { name => name.afterFirst("$").untilFirst("$") }.toVector
+			nameRegex.matchesIteratorFrom(reply.text)
+				.map { name => name.afterFirst("$").untilFirst("$") }.filterNot { _.isEmpty }.toVector
 		}
 	}
 }

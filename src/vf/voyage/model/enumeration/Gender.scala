@@ -1,5 +1,6 @@
 package vf.voyage.model.enumeration
 
+import utopia.flow.collection.CollectionExtensions._
 import utopia.flow.collection.immutable.Pair
 import utopia.flow.operator.enumeration.Binary
 
@@ -46,7 +47,15 @@ object Gender
 	/**
 	 * All available genders
 	 */
-	val values = Pair(Male, Female)
+	val values = Pair[Gender](Male, Female)
+	
+	
+	// OTHER    ------------------------
+	
+	def findForName(genderName: String) = values.find { _.name == genderName }
+	def forName(genderName: String) =
+		findForName(genderName)
+			.toTry { new NoSuchElementException(s"None of the available genders matches '$genderName'") }
 	
 	
 	// VALUES   ------------------------
