@@ -1,20 +1,21 @@
 package vf.voyage.controller.action
 
-import utopia.annex.model.response.Response
 import utopia.annex.util.RequestResultExtensions._
-import utopia.echo.model.LlmDesignator
+import utopia.echo.model.ChatMessage
+import utopia.echo.model.enumeration.ChatRole.{Assistant, System, User}
+import utopia.echo.model.response.chat.StreamedReplyMessage
 import utopia.echo.model.response.generate.StreamedReply
 import utopia.flow.async.AsyncExtensions._
-import utopia.flow.collection.immutable.Pair
+import utopia.flow.collection.CollectionExtensions._
+import utopia.flow.collection.immutable.{Empty, Pair}
+import utopia.flow.collection.mutable.iterator.OptionsIterator
 import utopia.flow.parse.string.Regex
-import utopia.flow.util.console.ConsoleExtensions._
 import utopia.flow.util.StringExtensions._
-import utopia.flow.view.mutable.caching.ResettableLazy
-import utopia.flow.view.mutable.eventful.SettableOnce
-import vf.voyage.model.context.{CharacterDescription, Gf}
+import utopia.flow.util.console.ConsoleExtensions._
 import vf.voyage.controller.Common._
+import vf.voyage.model.context.{CharacterDescription, Gf}
 
-import scala.collection.immutable.VectorBuilder
+import scala.annotation.tailrec
 import scala.io.StdIn
 import scala.util.{Failure, Success}
 
@@ -26,6 +27,9 @@ import scala.util.{Failure, Success}
 object CreateCharacter
 {
 	// ATTRIBUTES   ------------------------
+	
+	private val newCharacterIndicator = "CHAR:"
+	private val newCharacterRegex = Regex("CHAR") + Regex.escape(':')
 	
 	private val nameWrapperRegex = Regex.escape('$')
 	private val nameRegex = nameWrapperRegex + Regex.any + nameWrapperRegex
@@ -40,13 +44,13 @@ object CreateCharacter
 	 */
 	def apply()(implicit gf: Gf) = {
 		// Starts by writing the character description
-		println("How do you want to approach character-creation?")
-		StdIn.selectFrom(Pair(1 -> s"Brainstorm with an ${ gf.name }", 2 -> "Write the character yourself"))
+		println("How do you want us to approach character creation?")
+		StdIn.selectFrom(Pair(1 -> s"Let's brainstorm together", 2 -> "I want to write my character myself"), "options")
 			.flatMap {
 				// Case: Brainstorming
 				case 1 => brainstormCharacterCreation()
 				// Case: Write your own
-				case _ => StdIn.readNonEmptyLine("Please write a description for your character")
+				case _ => StdIn.readNonEmptyLine("Okay. Please write the description for your character")
 			}
 			// Next names the character
 			.flatMap { characterDescription =>
@@ -55,18 +59,19 @@ object CreateCharacter
 	}
 	
 	private def nameCharacter(characterDescription: String)(implicit gf: Gf) = {
-		println("Do you want to name your character right away, or do you want some ideas first?")
+		println("\nDo you want to name your character right away, or do you want some ideas first?")
 		StdIn.selectFrom(Pair(1 -> "I can name them now", 2 -> "Give me some ideas first")).flatMap {
 			// Case: Immediate naming
 			case 1 => StdIn.readNonEmptyLine("Please name your character")
 			// Case: AI-assisted naming
 			case _ =>
-				println(s"Asking $gf to come up with name-ideas for your character...")
-				ollama.generate(s"Here's a description of a role-playing character: \"$characterDescription\"\n\nPlease come up with 8 different names that could fit this character. \nWrap each name between dollar signs (e.g. $$Adam$$ is viable syntax for name \"Adam\")")
+				println(s"Let's see...")
+				ollama.generate(s"Help me come up with a name for my character. Here's the description of my character: \"$characterDescription\"\nCome up with at least 8 different names that go well with my character's description. \nWrap each name between dollar signs (e.g. $$Adam$$ is viable syntax for name Adam)")
 					.tryFlatMapSuccess(parseNameIdeas).waitForResult() match
 				{
 					case Success(nameIdeas) =>
-						println()
+						println("\nI hope you like these ideas. Feel free to come up with your own as well.")
+						// FIXME: Name-parsing didn't work. Also, this suggested more titles than names (title is not a bad idea, though)
 						StdIn.selectFromOrAdd(nameIdeas.map { n => n -> n }, "names") {
 							StdIn.readNonEmptyLine("Please name your character") }
 					
@@ -78,25 +83,53 @@ object CreateCharacter
 	}
 	
 	private def brainstormCharacterCreation()(implicit gf: Gf): Option[String] = {
-		println("Please write some words that may relate to your character. \nThese are used for providing the AI some inspiration.")
+		println(s"Give me some inspiration by writing some words that may relate to your character.")
 		StdIn.readNonEmptyLine().flatMap { inspiration =>
-			println(s"Asking ${ gf.name } to come up with some character ideas...")
-			ollama.generate(s"Come up with 5 different ideas for a role-playing character. Here are some words that may relate to these characters: $inspiration. Start the description of each character with [CHAR].")
-				.waitForResult().toTry.flatMap { parseCharacterIdeas(_).waitFor() } match
+			println(s"\nLet's see if I can come up with any ideas...")
+			ollama.generate(s"Come up with 5 different ideas for my role-playing character. Here are some words that may relate to these characters: $inspiration. Start the description of each character with \"$newCharacterIndicator\". Also, don't name the character at this point. I will name them later.")
+				.tryFlatMapSuccess(parseCharacterIdeas).waitForResult() match
 			{
 				case Success(characters) =>
-					println("\nWhat do you want to do next?")
-					StdIn.selectFrom(Vector(1 -> "Select one of these", 2 -> "Write your own", 3 -> "Try again")).flatMap {
-						// Case: Selecting from AI-generated characters
-						case 1 =>
-							StdIn.selectFrom(characters.map { c => c -> s"${ c.linesIterator.next().take(100) }..." })
-						
-						// Case: Writing a character
-						case 2 => StdIn.readNonEmptyLine("Please write a description for your character")
-						
-						// Case: Retry
-						case _ => brainstormCharacterCreation()
-					}
+					// TODO: Remove test
+					println(s"\nTest: Found ${ characters.size } characters")
+					characters.zipWithIndex.foreach { case (c, i) => println(s"$i: $c") }
+					
+					println("\nHow do you like these? We can always edit the one you choose, if you want.")
+					StdIn.selectFrom(Vector(
+							1 -> "Nice. I will pick one of these.",
+							2 -> "I think I will rather write my own character",
+							3 -> "Let's try again"))
+						.flatMap {
+							// Case: Selecting from AI-generated characters
+							case 1 =>
+								// TODO: Remove the "found 5 options" strings
+								// TODO: Cut character descriptions on some special character
+								println("Okay. Which character would you like to continue with?")
+								StdIn.selectFrom(characters
+										.map { c => c -> s"${ c.linesIterator.next().take(140).untilLast(".") }..." })
+									.map { description =>
+										if (StdIn.ask(s"Great choice :). Do you want to make some changes to this character's description?")) {
+											println("Okay. Here's the current description for reference:")
+											println(description)
+											println()
+											editCharacterDescription(description, Vector(
+												System(s"${ gf.player } and you are designing a role-playing character for ${
+													gf.player.gender.pronounObject }"),
+												User(s"Come up an idea for a role-playing character. Here are some words that may relate to this character: $inspiration."),
+												Assistant(description)))
+										}
+										else
+											description
+									}
+							
+							// Case: Writing a character
+							case 2 => StdIn.readNonEmptyLine("Makes sense. Please write a description for your character")
+							
+							// Case: Retry
+							case _ =>
+								println("\nOkay. Let's try again.")
+								brainstormCharacterCreation()
+						}
 				
 				case Failure(error) =>
 					log(error, "Response-generation failed")
@@ -105,43 +138,79 @@ object CreateCharacter
 		}
 	}
 	
+	@tailrec
+	private def editCharacterDescription(description: String, previousConversation: Seq[ChatMessage])
+	                                     (implicit gf: Gf): String =
+	{
+		println(s"What changes do you want to make to this character?")
+		val change = StdIn.readLine()
+		
+		// Case: No changes specified => Allows retry, if the user wants to
+		if (change.isEmpty) {
+			if (StdIn.ask("Do you want to continue without making any changes to your character?", default = true))
+				description
+			else
+				editCharacterDescription(description, previousConversation)
+		}
+		else {
+			// Applies the changes
+			println(s"\nOk. Let's see if I can apply these changes...")
+			ollama.chat(s"Please write a new version which incorporates this change: $change", previousConversation)
+				.tryFlatMapSuccess(parseEditedCharacterDescription)
+				.waitForResult() match
+			{
+				case Success(newDescription) =>
+					// Asks the user on how to proceed
+					println("\n\nAre you happy with this version, or do you want to make more changes?")
+					// NB: Once we use a more sophisticated UI, allow the user to edit the response themselves
+					StdIn.selectFrom(Vector(
+						1 -> "This looks good",
+						2 -> "Let's make some more changes",
+						3 -> "I don't like this change. Let's try again.",
+						4 -> "The previous version was better. Let's use that one instead.",
+						5 -> "That's enough source material. I will write the final version myself.")).getOrElse(1) match
+					{
+						// Case: More edits
+						case 2 =>
+							editCharacterDescription(newDescription,
+								previousConversation ++ Pair(User(change), Assistant(newDescription)))
+						// Case: Retry
+						case 3 => editCharacterDescription(description, previousConversation)
+						// Case: Continue with the original version
+						case 4 => description
+						// Case: Manual final edit
+						case 5 =>
+							println("Sounds good. Please write the final version now.")
+							StdIn.readLine()
+						// Case: Continue with this edited version
+						case _ => newDescription
+					}
+				
+				case Failure(error) =>
+					log(error, "Failed to request changes to the character description")
+					description
+			}
+		}
+	}
+	
 	private def parseCharacterIdeas(reply: StreamedReply) = {
-		// Pointers for building the characters while reading text data
-		val completedCharsBuilder = new VectorBuilder[String]()
-		val currentBuilderPointer = ResettableLazy { new StringBuilder() }
-		
-		// Listens to text updates and prints them. Also updates character text in real time.
-		println()
-		reply.newTextPointer.addContinuousListenerAndSimulateEvent("") { e =>
-			if (e.newValue.contains("[CHAR]")) {
-				val (toOld, toNew) = e.newValue.splitAtFirst("[CHAR]").toTuple
-				print(toOld)
-				println()
-				print(toNew)
-				
-				// Finishes the old character description
-				toOld.ifNotEmpty.foreach { text =>
-					currentBuilderPointer.current.foreach { b => b ++= text }
+		reply.printAsReceived { _.replaceEachMatchOf(newCharacterRegex, "") }
+		reply.future.mapIfSuccess { reply =>
+			reply.text.afterFirst(newCharacterIndicator).splitIterator(newCharacterRegex)
+				.map { raw =>
+					val trimmed = raw.trim
+					if (trimmed.isMultiLine)
+						trimmed.untilLast("\n")
+					else
+						trimmed
 				}
-				currentBuilderPointer.popCurrent().foreach { b => completedCharsBuilder += b.result() }
-				
-				// Starts a new one
-				currentBuilderPointer.value ++= toNew
-			}
-			else {
-				print(e.newValue)
-				currentBuilderPointer.current.foreach { _ ++= e.newValue }
-			}
+				.toVector
 		}
-		
-		// Once all text has been read, builds and returns the character vector
-		val charactersPointer = SettableOnce[Vector[String]]()
-		reply.newTextPointer.addChangingStoppedListenerAndSimulateEvent {
-			currentBuilderPointer.popCurrent().foreach { b => completedCharsBuilder += b.result() }
-			charactersPointer.set(completedCharsBuilder.result())
-		}
-		
-		charactersPointer.future
+	}
+	
+	private def parseEditedCharacterDescription(reply: StreamedReplyMessage) = {
+		reply.printAsReceived()
+		reply.future.mapIfSuccess { _.text }
 	}
 	
 	private def parseNameIdeas(reply: StreamedReply) = {
@@ -149,7 +218,7 @@ object CreateCharacter
 		reply.printAsReceived { _.replaceEachMatchOf(nameWrapperRegex, "") }
 		// Once read, parses the names from the reply
 		reply.future.mapIfSuccess { reply =>
-			nameRegex.matchesIteratorFrom(reply.text).map { name => name.drop(1).dropRight(1) }.toVector
+			nameRegex.matchesIteratorFrom(reply.text).map { name => name.afterFirst("$").untilFirst("$") }.toVector
 		}
 	}
 }

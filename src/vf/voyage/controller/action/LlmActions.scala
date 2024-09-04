@@ -21,10 +21,9 @@ object LlmActions
 	 * @return Designator of the selected model. None if selection was canceled or if data-reading failed.
 	 */
 	def selectModel() = {
-		println("Retrieving available model data...")
 		ollama.localModels.future.waitForResult() match {
 			case Response.Success(models: Seq[GeneralOllamaModelInfo], _, _) =>
-				println("Model data acquired. Please select the model to use.")
+				println("Please select the model to use.")
 				println("Note: It is recommended to select a model that supports tools")
 				StdIn.selectFrom(models.map { m => LlmDesignator(m.name) -> modelLine(m) }, "models", maxListCount = 30)
 				
