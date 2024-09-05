@@ -5,7 +5,7 @@ import utopia.flow.collection.CollectionExtensions._
 import utopia.flow.parse.file.FileExtensions._
 import utopia.flow.util.console.ConsoleExtensions._
 import vf.voyage.controller.action.{CreateCharacter, LlmActions, WorldBuilder}
-import vf.voyage.model.context.{CharacterDescription, Gf, Player}
+import vf.voyage.model.context.{CharacterDescription, GameSetting, Gf, Player}
 import vf.voyage.model.enumeration.Gender.{Female, Male}
 import vf.voyage.model.enumeration.GfRole.Facilitator
 import Common._
@@ -27,7 +27,7 @@ object VoyageOfDiscoveryApp extends App
 	saveDir.createDirectories().logFailure
 	private val gfPath = saveDir/"gf.json"
 	private val characterPath = saveDir/"character.json"
-	private val themePath = saveDir/"theme.txt"
+	private val settingPath = saveDir/"setting.json"
 	
 	
 	// APP CODE ----------------------------
@@ -41,8 +41,8 @@ object VoyageOfDiscoveryApp extends App
 		val preparedCharacter = if (loadEnabled) CharacterDescription.fromPath(characterPath).toOption else None
 		preparedCharacter.orElse { setupCharacter() }.foreach { character =>
 			// Next sets up the game theme
-			val preparedTheme = if (loadEnabled) StringFrom.path(themePath).toOption else None
-			preparedTheme.orElse { setupTheme(character) }.foreach { theme =>
+			val preparedSetting = if (loadEnabled) GameSetting.fromPath(settingPath).toOption else None
+			preparedSetting.orElse { setupSetting(character) }.foreach { theme =>
 				println("\nTo be continued...")
 			}
 		}
@@ -81,12 +81,11 @@ object VoyageOfDiscoveryApp extends App
 		character
 	}
 	
-	private def setupTheme(character: CharacterDescription)(implicit gf: Gf) = {
+	private def setupSetting(character: CharacterDescription)(implicit gf: Gf) = {
 		println("\nOkay. Let's start designing the game next.")
-		val theme = WorldBuilder.designGameTheme(gf, character)
+		val setting = WorldBuilder.designGameSetting(gf, character)
+		setting.foreach { settingPath.writeJson(_).logFailure }
 		
-		theme.foreach { themePath.write(_).logFailure }
-		
-		theme
+		setting
 	}
 }

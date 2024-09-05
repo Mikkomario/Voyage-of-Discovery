@@ -1,15 +1,21 @@
 package vf.voyage.controller.action
 
 import utopia.annex.util.RequestResultExtensions._
+import utopia.echo.model.enumeration.ChatRole.{Assistant, User}
+import utopia.echo.model.request.generate.Prompt
+import utopia.echo.model.response.OllamaResponse
+import utopia.echo.model.response.chat.StreamedReplyMessage
 import utopia.echo.model.response.generate.StreamedReply
 import utopia.flow.async.AsyncExtensions._
 import utopia.flow.collection.CollectionExtensions._
+import utopia.flow.collection.immutable.Pair
 import utopia.flow.parse.string.Regex
 import utopia.flow.util.console.ConsoleExtensions._
 import utopia.flow.util.StringExtensions._
-import vf.voyage.model.context.{CharacterDescription, Gf}
+import vf.voyage.model.context.{CharacterDescription, GameSetting, Gf}
 import vf.voyage.model.enumeration.GfRole.Designer
 import vf.voyage.controller.Common._
+import vf.voyage.model.enumeration.CompassDirection
 
 import scala.io.StdIn
 import scala.util.{Failure, Success}
@@ -22,52 +28,98 @@ import scala.util.{Failure, Success}
  */
 object WorldBuilder
 {
-	// ATTRIBUTES   -----------------------------
-	
-	private val braceRegex = Regex.anyOf("{}")
-	private val closingBraceRegex = Regex.escape('}')
-	private val withinBracesRegex =
-		Regex.escape('{') + (!closingBraceRegex).withinParenthesis.anyTimes + closingBraceRegex
-	
-	
 	// OTHER    ---------------------------------
 	
 	/**
 	 * Comes up with a theme for the game
 	 * @param gf The game facilitator
 	 * @param character The player's character
-	 * @return Theme chosen for the game. None if no theme was chosen or if the process failed.
+	 * @return Setting of the game. None if the process failed or was canceled by the user.
 	 */
-	def designGameTheme(gf: Gf, character: CharacterDescription) = {
+	def designGameSetting(gf: Gf, character: CharacterDescription) = {
 		implicit val designerGf: Gf = gf.withRole(Designer)
-		
-		println("Please wait a moment while I come up with a theme for our game...")
-		// FIXME: The AI wraps the responses in normal parentheses instead of curly brackets
-		ollama.generate(s"Here's a description of the game's protagonist: ${
-			character.description }\n\nCome up with 4 different themes for a role-playing game featuring this character. Wrap the description of each theme in curly brackets so that my computer application can automatically process them.")
-			.tryFlatMapSuccess(parseThemeIdeas).waitForResult()
-			.flatMap { _.notEmpty.toTry { new IllegalArgumentException("Theme-generation didn't yield a single result") } } match
-		{
-			case Success(themes) =>
-				themes.oneOrMany match {
-					case Left(only) =>
-						println(s"\n\nOkay. I finally figured it out. Here's the theme I came up with: $only.\nI Hope you like it.")
-						Some(only)
-					case Right(themes) =>
-						println("\nOkay. I came up with a couple themes. Please help me select the one that fits our game best.")
-						StdIn.selectFrom(themes.map { t => t -> t.take(140).untilLast(".") }, "themes")
-				}
-			
-			case Failure(error) =>
-				log(error, "Failed to generate a theme")
-				None
-		}
+		// Identifying the game's genre
+		println("Let's come up with the genre first...")
+		val genrePrompt = s"Here's a description of the game's protagonist: ${
+			character.description }. Assign a suitable genre for this game. The genre should facilitate role-playing and exploration."
+		ollama.generate(genrePrompt)
+			.tryFlatMapSuccess(printAndReturn)
+			.waitForResult().logToOption
+			.flatMap { genre =>
+				// Generating alternative themes
+				println("\n\nNext let's figure out a theme...")
+				val themeMessageHistory = Pair(User(genrePrompt), Assistant(genre))
+				ollama.chat("Come up with 5 alternative themes for this game. Start each theme with its index and keep each theme on a separate line.",
+						themeMessageHistory)
+					.tryFlatMapSuccess(parseThemeIdeas).waitForResult().logToOption
+					.flatMap { themes =>
+						// Allowing the user to select from the available themes
+						val theme = themes.oneOrMany match {
+							case Left(only) =>
+								println(s"\n\n\nOkay. I finally figured it out. Here's the theme I came up with: $only.\nI Hope you like it.")
+								Some(only)
+							case Right(themes) =>
+								println("\nOkay. I came up with a couple themes. Please help me select the one that fits our game best.")
+								StdIn.selectFrom(themes.map { t => t -> t.take(140).untilLast(".") }, "themes")
+						}
+						theme.flatMap { theme =>
+							// Describing the game world, also
+							println("\nOkay. Now we have a theme as well. Let me write a short world description next.")
+							ollama.chat("Describe this game's world / environment for me. Where are these events taking place? How is the culture? What kind of geographic environment is it? Are there some important factions culture- and story-wise?",
+								themeMessageHistory ++ Pair(User("Come up with a theme for this game"), Assistant(theme)))
+								.tryFlatMapSuccess(printAndReturn).waitForResult().logToOption
+								.map { worldDescription =>
+									GameSetting(genre, theme, worldDescription)
+								}
+						}
+					}
+			}
 	}
 	
-	private def parseThemeIdeas(reply: StreamedReply) = {
-		reply.printAsReceived { _.replaceEachMatchOf(braceRegex, "") }
+	/**
+	 * Generates a short description for a single area or biome
+	 * @param gf Game facilitator
+	 * @param neighbouringBiomes Descriptions of the surrounding areas.
+	 *                           The first values are the closer areas while the second values are areas further off.
+	 *                           The second value in each pair may be empty.
+	 * @param setting Implicit world setting
+	 * @return Future that resolves into an area description, if successful
+	 */
+	def generateBiome(gf: Gf, neighbouringBiomes: Map[CompassDirection, Pair[String]])
+	                 (implicit setting: GameSetting) =
+	{
+		implicit val designer: Gf = gf.withRole(Designer)
+		val surroundingBiomeDescription = neighbouringBiomes
+			.map { case (direction, biomes) =>
+				val directionStr = direction.toString.toLowerCase
+				val baseBiomeStr = s" Towards $directionStr of this area is ${ biomes.first }"
+				biomes.second.notEmpty match {
+					case Some(furtherBiome) => s"$baseBiomeStr and further $direction is $furtherBiome."
+					case None => s"$baseBiomeStr."
+				}
+			}
+			.mkString(". ")
+		
+		ollama
+			.generateBuffered(Prompt(
+				s"Come up with a local environment within this game. These are smaller areas, such as \"a town marketplace\", \"governor's office\", \"a beach\" or \"an entrance to a large cave\".${
+					surroundingBiomeDescription.prependIfNotEmpty(" \n") }", systemMessage = setting.systemMessage)
+				.toQuery)
+			.mapSuccess { _.text }
+	}
+	
+	private def parseThemeIdeas(reply: OllamaResponse) = {
+		reply.printAsReceived()
 		reply.future
-			.mapIfSuccess { _.text.splitIterator(withinBracesRegex)
-				.map { s => s.drop(1).dropRight(1) }.filterNot{ _.isEmpty }.toVector }
+			.mapIfSuccess {
+				_.text.linesIterator.filter { _.take(10).exists { _.isDigit } }
+					.map { line => line.drop(line.indexWhere { _.isDigit }).dropWhile { c => !c.isLetter } }
+					.toVector
+			}
+	}
+	
+	private def printAndReturn(reply: OllamaResponse) = {
+		reply.printAsReceived()
+		reply.future.mapIfSuccess { _.text }
 	}
 }
