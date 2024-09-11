@@ -6,6 +6,8 @@ import utopia.echo.model.ChatMessage
 import utopia.echo.model.enumeration.ChatRole.System
 import utopia.echo.model.enumeration.ModelParameter
 import utopia.echo.model.enumeration.ModelParameter._
+import utopia.echo.model.request.chat.ChatRequest
+import utopia.echo.model.request.chat.ChatRequest.ChatRequestFactory
 import utopia.echo.model.request.generate.{GenerateParams, Prompt, Query}
 import utopia.echo.model.response.OllamaResponse
 import utopia.flow.collection.immutable.Empty
@@ -16,7 +18,7 @@ import utopia.flow.time.TimeExtensions._
 import utopia.flow.util.logging.FileLogger
 import utopia.flow.view.template.Extender
 import vf.voyage.controller.Common._
-import vf.voyage.model.context.Gf
+import vf.voyage.model.context.{CharacterDescription, Gf}
 
 import scala.concurrent.Future
 import scala.util.{Failure, Success}
@@ -48,9 +50,11 @@ object VoyageOllamaClient extends Extender[OllamaClient]
 	 * Generates a streamed response based on the specified prompt
 	 * @param prompt A prompt to apply
 	 * @param gf The game facilitator
+	 * @param protagonist The game's protagonist, if that information is available
 	 * @return A future that resolves into a streamed request result
 	 */
-	def generate(prompt: Prompt)(implicit gf: Gf) = {
+	def generate(prompt: Prompt)(implicit gf: Gf, protagonist: CharacterDescription) =
+	{
 		val params = gfInstructionToPrompt(prompt).toQuery.toRequestParams.withOptions(options)
 		val future = wrapped.push(params.toRequest.streamed).future
 		
@@ -61,11 +65,15 @@ object VoyageOllamaClient extends Extender[OllamaClient]
 	/**
 	 * Generates a response without streaming
 	 * @param query Query to for the targeted LLM
+	 * @param options Additional options for the generation process
 	 * @param gf Implicit game facilitator
+	 * @param protagonist The game's protagonist, if that information is available
 	 * @return Future that resolves into the acquired reply response
 	 */
-	def generateBuffered(query: Query)(implicit gf: Gf) = {
-		val params = query.mapPrompt { gfInstructionToPrompt(_) }.toRequestParams.withOptions(options)
+	def generateBuffered(query: Query, options: Map[ModelParameter, Value] = Map())
+	                    (implicit gf: Gf, protagonist: CharacterDescription) =
+	{
+		val params = query.mapPrompt { gfInstructionToPrompt(_) }.toRequestParams.withOptions(this.options ++ options)
 		val future = wrapped.push(params.toRequest.buffered).future
 		
 		logQuery(params, future)
@@ -77,28 +85,50 @@ object VoyageOllamaClient extends Extender[OllamaClient]
 	 * @param message Message to send
 	 * @param messageHistory Message history (default = empty)
 	 * @param gf The game facilitator
+	 * @param protagonist The game's protagonist, if that information is available
 	 * @return A future that resolves into LLM's reply
 	 */
-	def chat(message: String, messageHistory: Seq[ChatMessage] = Empty)(implicit gf: Gf) = {
-		val request = ChatMessage(message).toRequestParams
+	def chat(message: String, messageHistory: Seq[ChatMessage] = Empty)
+	        (implicit gf: Gf, protagonist: CharacterDescription) =
+		_chat(message, messageHistory) { _.streamed }
+	/**
+	 * Sends a chat message to the LLM. Receives the whole response at once.
+	 * @param message Message to send
+	 * @param messageHistory Message history (default = empty)
+	 * @param options Additional options for the LLM (default = empty)
+	 * @param gf The game facilitator
+	 * @param protagonist The game's protagonist, if that information is available
+	 * @return A future that resolves into LLM's reply
+	 */
+	def chatBuffered(message: String, messageHistory: Seq[ChatMessage] = Empty, options: Map[ModelParameter, Value])
+	                (implicit gf: Gf, protagonist: CharacterDescription) =
+		_chat(message, messageHistory, options) { _.buffered }
+	
+	// Supports both buffered and streamed chat requests
+	private def _chat[A <: OllamaResponse](message: String, messageHistory: Seq[ChatMessage] = Empty,
+	                                       options: Map[ModelParameter, Value] = Map())
+	                                      (createRequest: ChatRequestFactory => ChatRequest[A])
+	                                      (implicit gf: Gf, protagonist: CharacterDescription) =
+	{
+		val params = ChatMessage(message).toRequestParams
 			.withConversationHistory(System(gf.systemMessage) +: messageHistory)
-			.withOptions(options)
-			.toRequest.streamed
-		val future = wrapped.push(request).future
+			.withOptions(this.options ++ options)
+		val future = wrapped.push(createRequest(params.toRequest)).future
 		
 		// Performs some logging
-		debugLogger(s"---------------------\n${ request.params.messages.mkString("\n") }")
+		debugLogger(s"---------------------\n${ params.messages.mkString("\n") }")
 		logResponse(future)
 		
 		future
 	}
 	
-	private def gfInstructionToPrompt(prompt: Prompt)(implicit gf: Gf) = prompt.mapSystemMessage { msg =>
-		if (msg.isEmpty)
-			gf.systemMessage
-		else
-			s"${ gf.systemMessage }\n\n$msg"
-	}
+	private def gfInstructionToPrompt(prompt: Prompt)(implicit gf: Gf, protagonist: CharacterDescription) =
+		prompt.mapSystemMessage { msg =>
+			if (msg.isEmpty)
+				gf.systemMessage
+			else
+				s"${ gf.systemMessage }\n\n$msg"
+		}
 	
 	private def logQuery(params: GenerateParams, responseFuture: Future[RequestResult[OllamaResponse]]) = {
 		val query = params.query

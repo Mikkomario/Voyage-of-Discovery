@@ -3,21 +3,27 @@ package vf.voyage.controller.action
 import utopia.annex.util.RequestResultExtensions._
 import utopia.echo.model.ChatMessage
 import utopia.echo.model.enumeration.ChatRole.{Assistant, System, User}
+import utopia.echo.model.enumeration.ModelParameter.PredictTokens
+import utopia.echo.model.request.generate.Prompt
+import utopia.echo.model.response.OllamaResponse
 import utopia.echo.model.response.chat.StreamedReplyMessage
 import utopia.echo.model.response.generate.StreamedReply
 import utopia.flow.async.AsyncExtensions._
-import utopia.flow.collection.CollectionExtensions._
-import utopia.flow.collection.immutable.{Empty, Pair}
-import utopia.flow.collection.mutable.iterator.OptionsIterator
+import utopia.flow.collection.immutable.Pair
+import utopia.flow.generic.casting.ValueConversions._
 import utopia.flow.parse.string.Regex
 import utopia.flow.util.StringExtensions._
 import utopia.flow.util.console.ConsoleExtensions._
 import vf.voyage.controller.Common._
 import vf.voyage.model.context.{CharacterDescription, Gf}
+import vf.voyage.model.enumeration.Gender
+import vf.voyage.model.enumeration.Gender.{Female, Male, Undefined}
+import vf.voyage.model.enumeration.GfRole.Designer
 
 import scala.annotation.tailrec
+import scala.concurrent.Future
 import scala.io.StdIn
-import scala.util.{Failure, Success}
+import scala.util.{Failure, Success, Try}
 
 /**
  * Provides interactive actions for setting up the game (theme, character, stuff like that)
@@ -27,6 +33,9 @@ import scala.util.{Failure, Success}
 object CreateCharacter
 {
 	// ATTRIBUTES   ------------------------
+	
+	// Uses an empty character description in character-creation requests
+	private implicit val placeholderChar: CharacterDescription = CharacterDescription.empty
 	
 	private val newCharacterIndicator = "CHAR:"
 	private val newCharacterRegex = Regex("CHAR") + Regex.escape(':')
@@ -40,7 +49,7 @@ object CreateCharacter
 	/**
 	 * Interacts with the user in order to come up with a game character
 	 * @param gf The game facilitator
-	 * @return Description of the player's character. None if character-creation was canceled.
+	 * @return Description of the player's character. None if character-creation was canceled or if it failed.
 	 */
 	def apply()(implicit gf: Gf) = {
 		// Starts by writing the character description
@@ -54,7 +63,17 @@ object CreateCharacter
 			}
 			// Next names the character
 			.flatMap { characterDescription =>
-				nameCharacter(characterDescription).map { name => CharacterDescription(name, characterDescription) }
+				nameCharacter(characterDescription)
+					.map { name =>
+						// Finally identifies the character's gender
+						identifyCharacterGender(gf, name, characterDescription).waitForResult() match {
+							case Success((gender, newDescription)) =>
+								CharacterDescription(name, newDescription, gender)
+							case Failure(error) =>
+								log(error, "Failed to identify character's gender")
+								CharacterDescription(name, characterDescription, Undefined)
+						}
+					}
 			}
 	}
 	
@@ -191,6 +210,139 @@ object CreateCharacter
 		}
 	}
 	
+	/**
+	 * Identifies whether the character is a male or a female.
+	 * Also updates the character description, if appropriate.
+	 * May interact with the user in order to come to a conclusion.
+	 * @param gf The game facilitator
+	 * @param name Character's name
+	 * @param description Character's description
+	 * @return Future that resolves into the character's gender and the new version of character description.
+	 *         Yields a failure if failed to converse with the LLM about this.
+	 */
+	private def identifyCharacterGender(gf: Gf, name: String, description: String): Future[Try[(Gender, String)]] = {
+		implicit val assistant: Gf = gf.withRole(Designer)
+		println(s"Let's make sure that I got $name's gender correct...")
+		// Checks whether the character description refers to a specific gender
+		val responseInstruction = "Respond only with the word \"male\", \"female\" or \"neutral\""
+		val descriptionGenderPrompt = s"Does the following character description refer to a male or a female, or is it gender-neutral? $responseInstruction. \nCharacter description: \"$description\""
+		ollama.generateBuffered(
+				Prompt(descriptionGenderPrompt).toQuery,
+				Map(PredictTokens -> 4))
+			.flatMap { descriptionGenderReply =>
+				descriptionGenderReply.toTry.map(parseGenderFrom).map { descriptionGender =>
+					// Checks whether the character's name is gender-specific
+					val descriptionGenderStr = descriptionGender.binary match {
+						case Some(gender) => gender.toString
+						case None => "neutral"
+					}
+					val nameGenderPrompt = s"Is the name \"$name\" masculine, feminine or gender-neutral? $responseInstruction."
+					val nameGenderMessageHistory = Pair(User(descriptionGenderPrompt), Assistant(descriptionGenderStr))
+					ollama.chatBuffered(nameGenderPrompt, nameGenderMessageHistory, Map(PredictTokens -> 4))
+						.flatMapSuccessToTry { nameGenderReply =>
+							val nameGender = parseGenderFrom(nameGenderReply)
+							val genderDefinitions = Pair(nameGender, descriptionGender).map { _.binary }
+							
+							genderDefinitions.merge { (name, desc) => name.filter(desc.contains) } match {
+								// Case: The gender is specified in both the description and the name
+								//       => Assumes that its correct
+								case Some(clearGender) =>
+									println(s"Looks like $name is $clearGender")
+									Future.successful(clearGender -> description)
+								
+								// Case: The gender is not specified in both the description and the name
+								//       => Checks which gender to assume, if any,
+								//          and checks whether that assumption is correct
+								case None =>
+									// 'characterGender' will be None only if the user refused to specify it
+									val characterGender = genderDefinitions
+										.merge { (name, desc) =>
+											name match {
+												case Some(nameGender) =>
+													if (desc.forall { _ == nameGender }) Some(nameGender) else None
+												case None => desc
+											}
+										} match
+									{
+										// Case: Gender may be assumed based on name or description
+										//       => Makes sure the assumption is correct
+										case Some(assumedGender) =>
+											if (StdIn.ask(s"Am I correct to assume that $name is $assumedGender?",
+												default = true))
+												assumedGender
+											else
+												assumedGender.opposite
+										
+										// Case: Both the description and the name are gender-neutral
+										//       => Asks the user to specify the gender
+										case None =>
+											println(s"I'm not sure about $name's gender yet. Which one should I go with?")
+											StdIn.selectFrom(Gender.binaryValues.map { g => g -> g.toString.capitalize },
+												"genders")
+												.getOrElse(Undefined)
+									}
+									
+									// Updates the character description, if appropriate
+									val updatedDescriptionFuture = characterGender.binary
+										.filterNot { _ == descriptionGender } match
+									{
+										case Some(gender) =>
+											println(s"Let me update $name's description to reflect ${
+												gender.pronounPossessive
+											} gender...")
+											val updateDescriptionPrompt = descriptionGender.binary match {
+												case Some(earlierGender) =>
+													s"Please write a new version of the aforementioned character description, replacing all ${
+														earlierGender.masculinity
+													} references with ${
+														gender.masculinity
+													} ones (${earlierGender.pronoun} with ${
+														gender.pronoun
+													}, ${earlierGender.pronounPossessive} with ${
+														gender.pronounPossessive
+													}, etc.)"
+												case None =>
+													s"Please write a new version of the aforementioned character description, replacing all gender-neutral references such as \"they\" or \"he or she\" with ${
+														gender.masculinity
+													} references (${gender.pronoun}, ${gender.pronounPossessive}, etc.)"
+											}
+											ollama.chat(updateDescriptionPrompt,
+													nameGenderMessageHistory ++
+														Pair(User(nameGenderPrompt), nameGenderReply.message))
+												.tryFlatMapSuccess(printAndReturn)
+												.map {
+													case Success(newDescription) =>
+														if (StdIn.ask(
+															"\nIs it okay for me to use this description instead of the previous version?",
+															default = true)) {
+															println("Noted!")
+															newDescription
+																.dropWhile { _ == '"' }.dropRightWhile { _ == '"' }
+														}
+														else {
+															println("Okay. I will continue to use the previous version instead.")
+															description
+														}
+													
+													case Failure(error) =>
+														log(error, "Failed to write the new description version")
+														println(s"Unfortunately something went wrong while editing $name's description. Let's continue with the previous version instead.")
+														description
+												}
+										
+										case None => Future.successful(description)
+									}
+									
+									// Returns the final gender and the updated description
+									updatedDescriptionFuture.map { updatedDescription =>
+										characterGender -> updatedDescription
+									}
+							}
+						}
+				}.flattenToFuture
+			}
+	}
+	
 	private def parseCharacterIdeas(reply: StreamedReply) = {
 		reply.printAsReceived { _.replaceEachMatchOf(newCharacterRegex, "") }
 		reply.future.mapIfSuccess { reply =>
@@ -219,5 +371,20 @@ object CreateCharacter
 			nameRegex.matchesIteratorFrom(reply.text)
 				.map { name => name.afterFirst("$").untilFirst("$") }.filterNot { _.isEmpty }.toVector
 		}
+	}
+	
+	// NB: Assumes that the reply is buffered
+	private def parseGenderFrom(reply: OllamaResponse): Gender = {
+		if (reply.text.containsIgnoreCase("female"))
+			Female
+		else if (reply.text.containsIgnoreCase("male"))
+			Male
+		else
+			Undefined
+	}
+	
+	private def printAndReturn(reply: OllamaResponse) = {
+		reply.printAsReceived()
+		reply.future.mapIfSuccess { _.text }
 	}
 }

@@ -10,7 +10,7 @@ import utopia.flow.operator.enumeration.Binary
  * @author Mikko Hilpinen
  * @since 04.09.2024, v0.1
  */
-sealed trait Gender extends Binary[Gender]
+sealed trait Gender
 {
 	// ABSTRACT -------------------------
 	
@@ -32,12 +32,26 @@ sealed trait Gender extends Binary[Gender]
 	 */
 	def pronounObject: String
 	
+	/**
+	 * @return This gender's masculinity, i.e. "masculine" or "feminine".
+	 */
+	def masculinity: String
+	
+	/**
+	 * @return Either male or female. None if undefined.
+	 */
+	def binary: Option[BinaryGender]
+	
 	
 	// IMPLEMENTED  ---------------------
 	
-	override def self = this
-	
 	override def toString = name
+}
+
+sealed trait BinaryGender extends Gender with Binary[BinaryGender]
+{
+	override def self: BinaryGender = this
+	override def binary = Some(this)
 }
 
 object Gender
@@ -45,14 +59,18 @@ object Gender
 	// ATTRIBUTES   --------------------
 	
 	/**
-	 * All available genders
+	 * Male and female
 	 */
-	val values = Pair[Gender](Male, Female)
+	val binaryValues = Pair[Gender](Male, Female)
+	/**
+	 * Male, female and undefined
+	 */
+	val values = binaryValues :+ Undefined
 	
 	
 	// OTHER    ------------------------
 	
-	def findForName(genderName: String) = values.find { _.name == genderName }
+	def findForName(genderName: String) = binaryValues.find { _.name == genderName }
 	def forName(genderName: String) =
 		findForName(genderName)
 			.toTry { new NoSuchElementException(s"None of the available genders matches '$genderName'") }
@@ -60,27 +78,40 @@ object Gender
 	
 	// VALUES   ------------------------
 	
-	case object Male extends Gender
+	case object Male extends BinaryGender
 	{
 		override def name = "male"
 		override def pronoun = "he"
 		override def pronounPossessive: String = "his"
 		override def pronounObject: String = "him"
+		override def masculinity: String = "masculine"
 		
 		override def unary_- = Female
 		
-		override def compareTo(o: Gender) = if (o == Male) 0 else 1
+		override def compareTo(o: BinaryGender) = if (o == Male) 0 else 1
 	}
 	
-	case object Female extends Gender
+	case object Female extends BinaryGender
 	{
 		override def name = "female"
 		override def pronoun = "she"
 		override def pronounPossessive: String = "her"
 		override def pronounObject: String = "her"
+		override def masculinity: String = "feminine"
 		
 		override def unary_- = Male
 		
-		override def compareTo(o: Gender) = if (o == Female) 0 else -1
+		override def compareTo(o: BinaryGender) = if (o == Female) 0 else -1
+	}
+	
+	case object Undefined extends Gender
+	{
+		override def name = "undefined"
+		override def pronoun = "they"
+		override def pronounPossessive = "their"
+		override def pronounObject = "them"
+		override def masculinity = "undefined"
+		
+		override def binary: Option[BinaryGender] = None
 	}
 }

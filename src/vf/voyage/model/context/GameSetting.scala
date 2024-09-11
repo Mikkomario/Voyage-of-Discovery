@@ -31,7 +31,7 @@ case class GameSetting(genre: String, theme: String, worldDescription: String) e
 	/**
 	 * @return A system message which describes this setting to an LLM
 	 */
-	def systemMessage = s"The game's genre is $genre. \nThe theme of the game is $theme. \nHere's a description of the game's environment: $worldDescription"
+	def systemMessage = s"The game's genre is $genre. \nThe theme of the game is $theme. \nHere's a description of the game's general environment: $worldDescription"
 	
 	
 	// IMPLEMENTED  ----------------------

@@ -1,5 +1,6 @@
 package vf.voyage.model.world
 
+import utopia.echo.model.ChatMessage
 import utopia.flow.view.immutable.caching.Lazy
 
 /**
@@ -8,10 +9,26 @@ import utopia.flow.view.immutable.caching.Lazy
  * @author Mikko Hilpinen
  * @since 04.09.2024, v0.1
  */
-class Area(val biome: String)(generateDescription: => String)
+class Area(val biome: String)
 {
-	/**
-	 * Lazily initialized description of this area
-	 */
-	val lazyDescription = Lazy { generateDescription }
+	// ATTRIBUTES   ---------------------------
+	
+	// Will store the story that unfolds within this area
+	private var story = Seq[ChatMessage]()
+	
+	
+	// COMPUTED -------------------------------
+	
+	def explored = story.nonEmpty
+	
+	
+	// OTHER    -------------------------------
+	
+	def enter() = {
+		// TODO: Implement
+	}
+	
+	private def enterFirstTime() = {
+	
+	}
 }

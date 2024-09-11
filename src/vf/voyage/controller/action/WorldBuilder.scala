@@ -4,21 +4,17 @@ import utopia.annex.util.RequestResultExtensions._
 import utopia.echo.model.enumeration.ChatRole.{Assistant, User}
 import utopia.echo.model.request.generate.Prompt
 import utopia.echo.model.response.OllamaResponse
-import utopia.echo.model.response.chat.StreamedReplyMessage
-import utopia.echo.model.response.generate.StreamedReply
 import utopia.flow.async.AsyncExtensions._
 import utopia.flow.collection.CollectionExtensions._
 import utopia.flow.collection.immutable.Pair
-import utopia.flow.parse.string.Regex
-import utopia.flow.util.console.ConsoleExtensions._
 import utopia.flow.util.StringExtensions._
-import vf.voyage.model.context.{CharacterDescription, GameSetting, Gf}
-import vf.voyage.model.enumeration.GfRole.Designer
+import utopia.flow.util.console.ConsoleExtensions._
 import vf.voyage.controller.Common._
+import vf.voyage.model.context.{CharacterDescription, GameSetting, Gf}
 import vf.voyage.model.enumeration.CompassDirection
+import vf.voyage.model.enumeration.GfRole.Designer
 
 import scala.io.StdIn
-import scala.util.{Failure, Success}
 
 /**
  * Interface for the world-building process (i.e. for the map & theme development)
@@ -33,15 +29,15 @@ object WorldBuilder
 	/**
 	 * Comes up with a theme for the game
 	 * @param gf The game facilitator
-	 * @param character The player's character
+	 * @param protagonist The game's protagonist
 	 * @return Setting of the game. None if the process failed or was canceled by the user.
 	 */
-	def designGameSetting(gf: Gf, character: CharacterDescription) = {
+	def designGameSetting(gf: Gf)(implicit protagonist: CharacterDescription) = {
 		implicit val designerGf: Gf = gf.withRole(Designer)
 		// Identifying the game's genre
 		println("Let's come up with the genre first...")
 		val genrePrompt = s"Here's a description of the game's protagonist: ${
-			character.description }. Assign a suitable genre for this game. The genre should facilitate role-playing and exploration."
+			protagonist.description }. Assign a suitable genre for this game. The genre should facilitate role-playing and exploration."
 		ollama.generate(genrePrompt)
 			.tryFlatMapSuccess(printAndReturn)
 			.waitForResult().logToOption
@@ -86,7 +82,7 @@ object WorldBuilder
 	 * @return Future that resolves into an area description, if successful
 	 */
 	def generateBiome(gf: Gf, neighbouringBiomes: Map[CompassDirection, Pair[String]])
-	                 (implicit setting: GameSetting) =
+	                 (implicit setting: GameSetting, protagonist: CharacterDescription) =
 	{
 		implicit val designer: Gf = gf.withRole(Designer)
 		val surroundingBiomeDescription = neighbouringBiomes

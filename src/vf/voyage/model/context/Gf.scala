@@ -1,6 +1,7 @@
 package vf.voyage.model.context
 
 import utopia.echo.model.LlmDesignator
+import utopia.flow.collection.immutable.caching.cache.CacheLatest
 import utopia.flow.generic.model.immutable.{Model, ModelDeclaration}
 import utopia.flow.generic.model.template.{ModelConvertible, ModelLike, Property}
 import utopia.flow.generic.casting.ValueConversions._
@@ -40,10 +41,18 @@ case class Gf(llm: LlmDesignator, name: String, player: Player, role: GfRole)
 {
 	// ATTRIBUTES -------------------------
 	
+	private val systemMessageCache = CacheLatest { implicit c: CharacterDescription =>
+		s"Your name is $name. ${ role.systemMessage(player) }"
+	}
+	
+	
+	// COMPUTED --------------------------
+	
 	/**
-	 * @return An instruction to give to the LLM on how to play their role as the GF.
+	 * @param character The game's protagonist. Empty if not yet available.
+	 * @return A system message instructing the LLM to act in this game facilitator's role
 	 */
-	lazy val systemMessage = s"Your name is $name. ${ role.systemMessage(player) }"
+	def systemMessage(implicit character: CharacterDescription) = systemMessageCache(character)
 	
 	
 	// IMPLEMENTED  ----------------------
@@ -60,5 +69,5 @@ case class Gf(llm: LlmDesignator, name: String, player: Player, role: GfRole)
 	 * @param role New role to assign to this GF
 	 * @return Copy of this GF with the specified role
 	 */
-	def withRole(role: GfRole) = copy(role = role)
+	def withRole(role: GfRole) = if (this.role == role) this else copy(role = role)
 }
