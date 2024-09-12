@@ -40,8 +40,8 @@ object WorldBuilder
 		implicit val designerGf: Gf = gf.withRole(Designer)
 		// Identifying the game's genre
 		println("Let's come up with the genre first...")
-		val genrePrompt = s"Here's a description of the game's protagonist: ${
-			protagonist.description }. Assign a suitable genre for this game. The genre should facilitate role-playing and exploration."
+		val genrePrompt = s"Assign a suitable genre for this game. The genre should facilitate role-playing and exploration. Only respond with the genre's name, possibly followed by its short description.\n\nFor reference, here's a description of the game's protagonist: ${
+			protagonist.description.endingWith(".") }"
 		ollama.generate(genrePrompt)
 			.tryFlatMapSuccess(printAndReturn)
 			.waitForResult().logToOption
@@ -49,7 +49,7 @@ object WorldBuilder
 				// Generating alternative themes
 				println("\n\nNext let's figure out a theme...")
 				val themeMessageHistory = Pair(User(genrePrompt), Assistant(genre))
-				ollama.chat("Come up with 5 alternative themes for this game. Start each theme with its index and keep each theme on a separate line.",
+				ollama.chat("Great. Come up with 5 alternative themes for this game. Start each theme with its index and keep each theme on a separate line.",
 						themeMessageHistory)
 					.tryFlatMapSuccess(parseIndexedList).waitForResult().logToOption
 					.flatMap { themes =>
@@ -59,13 +59,13 @@ object WorldBuilder
 								println(s"\n\n\nOkay. I finally figured it out. Here's the theme I came up with: $only.\nI Hope you like it.")
 								Some(only)
 							case Right(themes) =>
-								println("\nOkay. I came up with a couple themes. Please help me select the one that fits our game best.")
-								StdIn.selectFrom(themes.map { t => t -> t.take(140).untilLast(".") }, "themes")
+								println("\n\nOkay. I came up with a couple themes. Please help me select the one that fits our game best.")
+								StdIn.selectFrom(themes.map { t => t -> (t.take(140).untilLast(".") + "...") }, "themes")
 						}
 						theme.flatMap { theme =>
 							// Describing the game world, also
 							println("\nOkay. Now we have a theme as well. Let me write a short world description next.")
-							ollama.chat("Describe this game's world / environment for me. Where are these events taking place? How is the culture? What kind of geographic environment is it? Are there some important factions culture- and story-wise?",
+							ollama.chat("Describe this game's world / environment for me. Where are these events taking place? How is the culture? What kind of geographic environment is it? Are there some important factions culture- and story-wise? Present the description in a concise form that facilitates map design and story-writing. Do not include additional commentary.",
 								themeMessageHistory ++ Pair(User("Come up with a theme for this game"), Assistant(theme)))
 								.tryFlatMapSuccess(printAndReturn).waitForResult().logToOption
 								.map { worldDescription =>

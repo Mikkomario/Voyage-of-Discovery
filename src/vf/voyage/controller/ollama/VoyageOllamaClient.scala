@@ -10,6 +10,7 @@ import utopia.echo.model.request.chat.ChatRequest
 import utopia.echo.model.request.chat.ChatRequest.ChatRequestFactory
 import utopia.echo.model.request.generate.{GenerateParams, Prompt, Query}
 import utopia.echo.model.response.OllamaResponse
+import utopia.flow.async.AsyncExtensions._
 import utopia.flow.collection.immutable.Empty
 import utopia.flow.generic.casting.ValueConversions._
 import utopia.flow.generic.model.immutable.Value
@@ -103,6 +104,22 @@ object VoyageOllamaClient extends Extender[OllamaClient]
 	def chatBuffered(message: String, messageHistory: Seq[ChatMessage] = Empty, options: Map[ModelParameter, Value])
 	                (implicit gf: Gf, protagonist: CharacterDescription) =
 		_chat(message, messageHistory, options) { _.buffered }
+	
+	/**
+	 * Parses a list of indexed entries. Useful for interpreting queries that request a list of options.
+	 * Prints the response as it is being received.
+	 * @param reply Reply to interpret
+	 * @return Future that resolves into the parsed entries, or a failure.
+	 */
+	def parseIndexedList(reply: OllamaResponse) = {
+		reply.printAsReceived()
+		reply.future
+			.mapIfSuccess {
+				_.text.linesIterator.filter { _.take(10).exists { _.isDigit } }
+					.map { line => line.drop(line.indexWhere { _.isDigit }).dropWhile { c => !c.isLetter } }
+					.toVector
+			}
+	}
 	
 	// Supports both buffered and streamed chat requests
 	private def _chat[A <: OllamaResponse](message: String, messageHistory: Seq[ChatMessage] = Empty,

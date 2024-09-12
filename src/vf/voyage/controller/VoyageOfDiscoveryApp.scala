@@ -20,6 +20,7 @@ import scala.util.Random
  * @author Mikko Hilpinen
  * @since 04.09.2024, v0.1
  */
+// TODO: In general, make sure to remove ** from the text
 object VoyageOfDiscoveryApp extends App
 {
 	// ATTRIBUTES   ------------------------

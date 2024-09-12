@@ -7,11 +7,9 @@ import utopia.echo.model.enumeration.ModelParameter.PredictTokens
 import utopia.echo.model.request.generate.Prompt
 import utopia.echo.model.response.OllamaResponse
 import utopia.echo.model.response.chat.StreamedReplyMessage
-import utopia.echo.model.response.generate.StreamedReply
 import utopia.flow.async.AsyncExtensions._
 import utopia.flow.collection.immutable.Pair
 import utopia.flow.generic.casting.ValueConversions._
-import utopia.flow.parse.string.Regex
 import utopia.flow.util.StringExtensions._
 import utopia.flow.util.console.ConsoleExtensions._
 import vf.voyage.controller.Common._
@@ -36,12 +34,6 @@ object CreateCharacter
 	
 	// Uses an empty character description in character-creation requests
 	private implicit val placeholderChar: CharacterDescription = CharacterDescription.empty
-	
-	private val newCharacterIndicator = "CHAR:"
-	private val newCharacterRegex = Regex("CHAR") + Regex.escape(':')
-	
-	private val nameWrapperRegex = Regex.escape('$')
-	private val nameRegex = nameWrapperRegex + !nameWrapperRegex + Regex.any + nameWrapperRegex
 	
 	
 	// OTHER    ----------------------------
@@ -77,40 +69,13 @@ object CreateCharacter
 			}
 	}
 	
-	private def nameCharacter(characterDescription: String)(implicit gf: Gf) = {
-		println("\nDo you want to name your character right away, or do you want some ideas first?")
-		StdIn.selectFrom(Pair(1 -> "I can name them now", 2 -> "Give me some ideas first")).flatMap {
-			// Case: Immediate naming
-			case 1 => StdIn.readNonEmptyLine("Please name your character")
-			// Case: AI-assisted naming
-			case _ =>
-				println(s"Let's see...")
-				ollama.generate(s"Help me come up with a name for my character. Here's the description of my character: \"$characterDescription\"\nCome up with at least 8 different names that go well with my character's description. \nWrap each name between dollar signs (e.g. $$Adam$$ is viable syntax for name Adam)")
-					.tryFlatMapSuccess(parseNameIdeas).waitForResult() match
-				{
-					case Success(nameIdeas) =>
-						// TODO: Add a familiar name once it has a purpose in the game
-						if (nameIdeas.isEmpty)
-							StdIn.readNonEmptyLine("\nOkay. Write the name you like the best. And feel free to create a new one if you want to.")
-						else {
-							println("\nI hope you like these ideas. Feel free to come up with your own as well.")
-							StdIn.selectFromOrAdd(nameIdeas.map { n => n -> n }, "names") {
-								StdIn.readNonEmptyLine("Please name your character") }
-						}
-					
-					case Failure(error) =>
-						log(error, "Failed to generate name ideas")
-						None
-				}
-		}
-	}
-	
+	// TODO: Remove empty lines or penalize newline
 	private def brainstormCharacterCreation()(implicit gf: Gf): Option[String] = {
 		println(s"Give me some inspiration by writing some words that may relate to your character.")
 		StdIn.readNonEmptyLine().flatMap { inspiration =>
 			println(s"\nInspiring! Let's see what I can come up with...")
-			ollama.generate(s"Come up with 5 different ideas for my role-playing character. Here are some words that may relate to these characters: $inspiration. Start the description of each character with \"$newCharacterIndicator\". Also, don't name the character at this point. I will name them later.")
-				.tryFlatMapSuccess(parseCharacterIdeas).waitForResult() match
+			ollama.generate(s"Come up with 5 different ideas for my role-playing character. Here are some words that may relate to these characters: $inspiration. Keep each description on a single line and prefix each with its index. Also, don't name the character at this point. I will name them later.")
+				.tryFlatMapSuccess(ollama.parseIndexedList).waitForResult() match
 			{
 				case Success(characters) =>
 					println("\n\nHow do you like these? We can always edit the one you choose, if you want.")
@@ -132,7 +97,7 @@ object CreateCharacter
 											editCharacterDescription(description, Vector(
 												System(s"${ gf.player } and you are designing a role-playing character for ${
 													gf.player.gender.pronounObject }"),
-												User(s"Come up an idea for a role-playing character. Here are some words that may relate to this character: $inspiration."),
+												User(s"Come up an idea for a role-playing character. Here are some words that may relate to this character: $inspiration. Do not name the character at this point, however."),
 												Assistant(description)))
 										}
 										else
@@ -157,7 +122,7 @@ object CreateCharacter
 	
 	@tailrec
 	private def editCharacterDescription(description: String, previousConversation: Seq[ChatMessage])
-	                                     (implicit gf: Gf): String =
+	                                    (implicit gf: Gf): String =
 	{
 		println(s"What changes do you want to make to this character?")
 		val change = StdIn.readLine()
@@ -172,7 +137,9 @@ object CreateCharacter
 		else {
 			// Applies the changes
 			println(s"\nOk. Let's see if I can apply these changes...")
-			ollama.chat(s"Please write a new version which incorporates this change: $change", previousConversation)
+			ollama.chat(
+					s"This description is good! However, please write another version which incorporates these changes: $change",
+					previousConversation)
 				.tryFlatMapSuccess(parseEditedCharacterDescription)
 				.waitForResult() match
 			{
@@ -210,6 +177,34 @@ object CreateCharacter
 		}
 	}
 	
+	private def nameCharacter(characterDescription: String)(implicit gf: Gf) = {
+		println("\nDo you want to name your character right away, or do you want some ideas first?")
+		StdIn.selectFrom(Pair(1 -> "I can name them now", 2 -> "Give me some ideas first")).flatMap {
+			// Case: Immediate naming
+			case 1 => StdIn.readNonEmptyLine("Please name your character")
+			// Case: AI-assisted naming
+			case _ =>
+				println(s"Let's see...")
+				ollama.generate(s"Help me come up with a name for my character. Come up with at least 8 different names that go well with my character's description. Place each name on a separate line, prefixing it with its index. \nHere's the description of my character: $characterDescription")
+					.tryFlatMapSuccess(ollama.parseIndexedList).waitForResult() match
+				{
+					case Success(nameIdeas) =>
+						// TODO: Add a familiar name once it has a purpose in the game
+						if (nameIdeas.isEmpty)
+							StdIn.readNonEmptyLine("\nOkay. Write the name you like the best. And feel free to create a new one if you want to.")
+						else {
+							println("\nI hope you like these ideas. Feel free to come up with your own as well.")
+							StdIn.selectFromOrAdd(nameIdeas.map { n => n -> n }, "names") {
+								StdIn.readNonEmptyLine("Please name your character") }
+						}
+					
+					case Failure(error) =>
+						log(error, "Failed to generate name ideas")
+						None
+				}
+		}
+	}
+	
 	/**
 	 * Identifies whether the character is a male or a female.
 	 * Also updates the character description, if appropriate.
@@ -222,7 +217,7 @@ object CreateCharacter
 	 */
 	private def identifyCharacterGender(gf: Gf, name: String, description: String): Future[Try[(Gender, String)]] = {
 		implicit val assistant: Gf = gf.withRole(Designer)
-		println(s"Let's make sure that I got $name's gender correct...")
+		println(s"\nExcellent. Let's make sure that I got $name's gender correct...")
 		// Checks whether the character description refers to a specific gender
 		val responseInstruction = "Respond only with the word \"male\", \"female\" or \"neutral\""
 		val descriptionGenderPrompt = s"Does the following character description refer to a male or a female, or is it gender-neutral? $responseInstruction. \nCharacter description: \"$description\""
@@ -236,6 +231,7 @@ object CreateCharacter
 						case Some(gender) => gender.toString
 						case None => "neutral"
 					}
+					// TODO: Don't include the previous prompt here
 					val nameGenderPrompt = s"Is the name \"$name\" masculine, feminine or gender-neutral? $responseInstruction."
 					val nameGenderMessageHistory = Pair(User(descriptionGenderPrompt), Assistant(descriptionGenderStr))
 					ollama.chatBuffered(nameGenderPrompt, nameGenderMessageHistory, Map(PredictTokens -> 4))
@@ -343,34 +339,9 @@ object CreateCharacter
 			}
 	}
 	
-	private def parseCharacterIdeas(reply: StreamedReply) = {
-		reply.printAsReceived { _.replaceEachMatchOf(newCharacterRegex, "") }
-		reply.future.mapIfSuccess { reply =>
-			reply.text.afterFirst(newCharacterIndicator).splitIterator(newCharacterRegex)
-				.map { raw =>
-					val trimmed = raw.trim
-					if (trimmed.isMultiLine)
-						trimmed.untilLast("\n")
-					else
-						trimmed
-				}
-				.toVector
-		}
-	}
-	
 	private def parseEditedCharacterDescription(reply: StreamedReplyMessage) = {
 		reply.printAsReceived()
 		reply.future.mapIfSuccess { _.text }
-	}
-	
-	private def parseNameIdeas(reply: StreamedReply) = {
-		// Prints the reply
-		reply.printAsReceived { _.replaceEachMatchOf(nameWrapperRegex, "") }
-		// Once read, parses the names from the reply
-		reply.future.mapIfSuccess { reply =>
-			nameRegex.matchesIteratorFrom(reply.text)
-				.map { name => name.afterFirst("$").untilFirst("$") }.filterNot { _.isEmpty }.toVector
-		}
 	}
 	
 	// NB: Assumes that the reply is buffered
