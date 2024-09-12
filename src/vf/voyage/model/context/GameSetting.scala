@@ -6,6 +6,7 @@ import utopia.flow.generic.casting.ValueConversions._
 import utopia.flow.generic.casting.ValueUnwraps._
 import utopia.flow.generic.factory.FromModelFactoryWithSchema
 import utopia.flow.generic.model.mutable.DataType.StringType
+import utopia.flow.util.StringExtensions._
 
 object GameSetting extends FromModelFactoryWithSchema[GameSetting]
 {
@@ -26,12 +27,26 @@ object GameSetting extends FromModelFactoryWithSchema[GameSetting]
  */
 case class GameSetting(genre: String, theme: String, worldDescription: String) extends ModelConvertible
 {
-	// COMPUTED --------------------------
+	// ATTRIBUTES --------------------------
 	
 	/**
 	 * @return A system message which describes this setting to an LLM
 	 */
-	def systemMessage = s"The game's genre is $genre. \nThe theme of the game is $theme. \nHere's a description of the game's general environment: $worldDescription"
+	lazy val systemMessage = s"Game's genre: ${genre.endingWith(".")}. \nGame's theme: ${
+		theme.endingWith(".")} \nGame's general environment: ${worldDescription.endingWith(".")}"
+	
+	
+	// COMPUTED --------------------------
+	
+	/**
+	 * A system message which describes this setting to an LLM.
+	 * Includes description of the game's protagonist
+	 * @param protagonist Game's protagonist (implicit)
+	 * @return Description of the game setting, including protagonist's description
+	 */
+	def systemMessageIncludingProtagonist(implicit protagonist: CharacterDescription) =
+		s"$systemMessage.\nGame's protagonist: ${ protagonist.name }: ${
+			protagonist.description.endingWith(".")}"
 	
 	
 	// IMPLEMENTED  ----------------------

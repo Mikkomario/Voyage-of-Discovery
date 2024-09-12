@@ -1,7 +1,10 @@
 package vf.voyage.model.world
 
 import utopia.echo.model.ChatMessage
-import utopia.flow.view.immutable.caching.Lazy
+import utopia.flow.generic.model.immutable.Model
+import utopia.flow.generic.model.template.ModelConvertible
+import utopia.flow.generic.casting.ValueConversions._
+import vf.voyage.model.enumeration.CompassDirection
 
 /**
  * Represents a single explorable area within the game. Parts of this area's information are added lazily.
@@ -9,9 +12,14 @@ import utopia.flow.view.immutable.caching.Lazy
  * @author Mikko Hilpinen
  * @since 04.09.2024, v0.1
  */
-class Area(val biome: String)
+class Area(val biome: String, val blockedDirections: Set[CompassDirection]) extends ModelConvertible
 {
 	// ATTRIBUTES   ---------------------------
+	
+	/**
+	 * Directions that may be traversed towards from this area
+	 */
+	lazy val accessibleDirections = CompassDirection.valueSet -- blockedDirections
 	
 	// Will store the story that unfolds within this area
 	private var story = Seq[ChatMessage]()
@@ -22,13 +30,10 @@ class Area(val biome: String)
 	def explored = story.nonEmpty
 	
 	
-	// OTHER    -------------------------------
+	// IMPLEMENTED  --------------------------
 	
-	def enter() = {
-		// TODO: Implement
-	}
-	
-	private def enterFirstTime() = {
-	
-	}
+	override def toModel: Model = Model.from(
+		"biome" -> biome,
+		"blockedDirections" -> blockedDirections.view.map { _.toString }.toVector,
+		"story" -> story)
 }

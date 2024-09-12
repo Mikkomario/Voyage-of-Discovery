@@ -16,5 +16,6 @@
     <orderEntry type="module" module-name="Disciple" />
     <orderEntry type="module" module-name="Echo" />
     <orderEntry type="module" module-name="Flow" />
+    <orderEntry type="module" module-name="Paradigm" />
   </component>
 </module>
