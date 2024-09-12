@@ -14,6 +14,14 @@ import scala.util.Random
  */
 sealed trait CompassDirection extends Reversible[CompassDirection]
 {
+	// ABSTRACT -----------------------
+	
+	/**
+	 * @return Name of this direction
+	 */
+	def name: String
+	
+	
 	// COMPUTED -----------------------
 	
 	def opposite = -this
@@ -23,7 +31,7 @@ sealed trait CompassDirection extends Reversible[CompassDirection]
 	
 	override def self: CompassDirection = this
 	
-	override def toString = super.toString.toLowerCase
+	override def toString = name
 }
 
 object CompassDirection
@@ -66,21 +74,25 @@ object CompassDirection
 	
 	case object North extends CompassDirection
 	{
+		override def name: String = "north"
 		override def unary_- : CompassDirection = South
 	}
 	
 	case object South extends CompassDirection
 	{
+		override def name: String = "south"
 		override def unary_- : CompassDirection = North
 	}
 	
 	case object East extends CompassDirection
 	{
+		override def name: String = "east"
 		override def unary_- : CompassDirection = West
 	}
 	
 	case object West extends CompassDirection
 	{
+		override def name: String = "west"
 		override def unary_- : CompassDirection = East
 	}
 }

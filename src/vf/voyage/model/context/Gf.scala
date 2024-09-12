@@ -41,12 +41,16 @@ case class Gf(llm: LlmDesignator, name: String, player: Player, role: GfRole)
 {
 	// ATTRIBUTES -------------------------
 	
-	private val systemMessageCache = CacheLatest { implicit c: CharacterDescription =>
-		s"Your name is $name. ${ role.systemMessage(player) }"
-	}
+	private val systemMessageCache =
+		CacheLatest { implicit c: CharacterDescription => role.systemMessage(name, player) }
 	
 	
 	// COMPUTED --------------------------
+	
+	/**
+	 * @return The approximate number of tokens int his GF's system message
+	 */
+	def approxMessageTokens = role.approxMessageTokens + 5
 	
 	/**
 	 * @param character The game's protagonist. Empty if not yet available.

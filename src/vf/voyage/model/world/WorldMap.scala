@@ -23,7 +23,7 @@ import scala.util.Random
  */
 class WorldMap(startingBiome: String,
                areasSurroundingStart: Iterable[(CompassDirection, String, Set[CompassDirection])])
-              (implicit gf: Gf, setting: GameSetting, protagonist: CharacterDescription)
+              (implicit designer: Gf, setting: GameSetting, protagonist: CharacterDescription)
 	extends ModelConvertible
 {
 	// ATTRIBUTES   -----------------------
@@ -44,6 +44,10 @@ class WorldMap(startingBiome: String,
 	
 	private val currentCoordinatesPointer = EventfulPointer(Coordinates.origin)
 	private val currentLocationPointer = currentCoordinatesPointer.strongMap { new Location(_) }
+	
+	// TODO: Remove test
+	println(s"Initially defined areas: ")
+	grid.foreach { case (c, a) => println(s"$c: ${ a.biome }") }
 	
 	
 	// COMPUTED ---------------------------
@@ -140,8 +144,10 @@ class WorldMap(startingBiome: String,
 				.toMap
 			
 			println("Just a moment. I need to do some additional world-building...")
-			val biome = WorldBuilder.generateBiome(gf, surroundingBiomes, blockedDirections).waitForTry()
+			val biome = WorldBuilder.generateBiome(surroundingBiomes, blockedDirections).waitForTry()
 				.getOrElseLog { surroundingBiomes.valuesIterator.toOptimizedSeq.random.first }
+			// TODO: Test
+			println(biome)
 			
 			// Stores the new area in the grid
 			val area = new Area(biome, blockedDirections)

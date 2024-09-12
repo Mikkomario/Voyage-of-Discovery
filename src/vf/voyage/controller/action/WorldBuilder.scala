@@ -1,9 +1,9 @@
 package vf.voyage.controller.action
 
 import utopia.annex.util.RequestResultExtensions._
-import utopia.echo.model.enumeration.ChatRole.{Assistant, User}
+import utopia.echo.model.enumeration.ChatRole.{Assistant, System, User}
+import utopia.echo.model.enumeration.ModelParameter.{ContextTokens, MiroStatEta, PredictTokens, Temperature, TopK}
 import utopia.echo.model.request.generate.Prompt
-import utopia.echo.model.response.OllamaResponse
 import utopia.flow.async.AsyncExtensions._
 import utopia.flow.collection.CollectionExtensions._
 import utopia.flow.collection.immutable.{Empty, Pair}
@@ -14,10 +14,9 @@ import utopia.flow.util.console.ConsoleExtensions._
 import vf.voyage.controller.Common._
 import vf.voyage.model.context.{CharacterDescription, GameSetting, Gf}
 import vf.voyage.model.enumeration.CompassDirection
-import vf.voyage.model.enumeration.GfRole.Designer
 
-import scala.io.StdIn
 import scala.collection.mutable
+import scala.io.StdIn
 import scala.util.Random
 
 /**
@@ -28,68 +27,78 @@ import scala.util.Random
  */
 object WorldBuilder
 {
+	// ATTRIBUTES   -----------------------------
+	
+	private val expectedGenreTokens = 150
+	private val expectedThemeTokens = 70
+	private val expectedWorldDescriptionTokens = 600
+	
+	private val expectedBiomeTokens = 80
+	
+	
 	// OTHER    ---------------------------------
 	
 	/**
 	 * Comes up with a theme for the game
-	 * @param gf The game facilitator
+	 * @param designer The game's designer
 	 * @param protagonist The game's protagonist
 	 * @return Setting of the game. None if the process failed or was canceled by the user.
 	 */
-	def designGameSetting(gf: Gf)(implicit protagonist: CharacterDescription) = {
-		implicit val designerGf: Gf = gf.withRole(Designer)
+	def designGameSetting()(implicit designer: Gf, protagonist: CharacterDescription) = {
 		// Identifying the game's genre
 		println("Let's come up with the genre first...")
-		val genrePrompt = s"Assign a suitable genre for this game. The genre should facilitate role-playing and exploration. Only respond with the genre's name, possibly followed by its short description.\n\nFor reference, here's a description of the game's protagonist: ${
-			protagonist.description.endingWith(".") }"
-		ollama.generate(genrePrompt)
-			.tryFlatMapSuccess(printAndReturn)
+		val background = s"You're designing the genre and setting for a role-playing game featuring ${ protagonist.name } as it's protagonist. \nYour goal is to make the game fit the following ${
+			protagonist.name }'s character description well: ${ protagonist.description }"
+		val genrePrompt = s"Assign a suitable genre for this game. The genre should facilitate role-playing and exploration. Only respond with the genre's name, possibly followed by its short description. Keep the reply within 100 words."
+		val genreContextSize = designer.approxMessageTokens + expectedGenreTokens + 300
+		ollama.generate(Prompt(genrePrompt, systemMessage = background),
+				options = Map(PredictTokens -> expectedGenreTokens, ContextTokens -> genreContextSize))
+			.tryFlatMapSuccess { ollama.printAndReturnText(_, clean = true) }
 			.waitForResult().logToOption
-			.flatMap { genre =>
-				// Generating alternative themes
-				println("\n\nNext let's figure out a theme...")
-				val themeMessageHistory = Pair(User(genrePrompt), Assistant(genre))
-				ollama.chat("Great. Come up with 5 alternative themes for this game. Start each theme with its index and keep each theme on a separate line.",
-						themeMessageHistory)
-					.tryFlatMapSuccess(parseIndexedList).waitForResult().logToOption
-					.flatMap { themes =>
-						// Allowing the user to select from the available themes
-						val theme = themes.oneOrMany match {
-							case Left(only) =>
-								println(s"\n\n\nOkay. I finally figured it out. Here's the theme I came up with: $only.\nI Hope you like it.")
-								Some(only)
-							case Right(themes) =>
-								println("\n\nOkay. I came up with a couple themes. Please help me select the one that fits our game best.")
-								StdIn.selectFrom(themes.map { t => t -> (t.take(140).untilLast(".") + "...") }, "themes")
-						}
-						theme.flatMap { theme =>
-							// Describing the game world, also
-							println("\nOkay. Now we have a theme as well. Let me write a short world description next.")
-							ollama.chat("Describe this game's world / environment for me. Where are these events taking place? How is the culture? What kind of geographic environment is it? Are there some important factions culture- and story-wise? Present the description in a concise form that facilitates map design and story-writing. Do not include additional commentary.",
-								themeMessageHistory ++ Pair(User("Come up with a theme for this game"), Assistant(theme)))
-								.tryFlatMapSuccess(printAndReturn).waitForResult().logToOption
-								.map { worldDescription =>
-									GameSetting(genre, theme, worldDescription)
-								}
-						}
+			.flatMap { rawGenre =>
+				val genre = {
+					val lines = rawGenre.linesIterator.toVector
+					if (lines.isEmpty)
+						rawGenre
+					else if (lines.head.contains('-'))
+						lines.head
+					else
+						lines.take(2).mkString(" - ")
+				}
+				// TODO: Testing
+				println(s"Raw: $rawGenre\nFinal: $genre")
+				// Describing the game world, also
+				println("\n\nOkay. Let me write a short world description next...")
+				ollama.chat(s"Write a short summary of the game's environment. Where are these events taking place? What kind of geographic environment is it? What are this world's inhabitants like? Present this description in a concise form that facilitates map design. The environment needs to fit the game's genre and ${
+						protagonist.name }'s character description. Keep the description short (less than 250 words). Do not include additional commentary or instructions.",
+						Vector(System(background), User(genrePrompt), Assistant(genre)),
+						options = Map(
+							PredictTokens -> expectedWorldDescriptionTokens,
+							ContextTokens -> (genreContextSize + expectedThemeTokens +
+								expectedWorldDescriptionTokens + 700),
+							Temperature -> 0.8, MiroStatEta -> 0.2, TopK -> 60))
+					.tryFlatMapSuccess { ollama.printAndReturnText(_, clean = true) }
+					.waitForResult().logToOption
+					.map { worldDescription =>
+						GameSetting(genre, worldDescription)
 					}
 			}
 	}
 	
 	/**
 	 * Generates a short description for a single area or biome
-	 * @param gf Game facilitator
 	 * @param neighbouringBiomes Descriptions of the surrounding areas.
 	 *                           The first values are the closer areas while the second values are areas further off.
 	 *                           The second value in each pair may be empty.
+	 * @param designer The game's designer
 	 * @param setting Implicit world setting
 	 * @return Future that resolves into an area description, if successful
 	 */
-	def generateBiome(gf: Gf, neighbouringBiomes: Map[CompassDirection, Pair[String]],
+	def generateBiome(neighbouringBiomes: Map[CompassDirection, Pair[String]],
 	                  blockedDirections: Set[CompassDirection])
-	                 (implicit setting: GameSetting, protagonist: CharacterDescription) =
+	                 (implicit designer: Gf, setting: GameSetting, protagonist: CharacterDescription) =
 	{
-		implicit val designer: Gf = gf.withRole(Designer)
+		// TODO: Cut at :
 		val surroundingBiomeDescription = neighbouringBiomes
 			.map { case (direction, biomes) =>
 				val baseBiomeStr = s" Towards $direction of this area is ${ biomes.first }"
@@ -114,30 +123,32 @@ object WorldBuilder
 		ollama
 			.generateBuffered(Prompt(
 				s"Come up with a local environment within this game. These are smaller areas, such as \"a town marketplace\", \"governor's office\", \"a beach\" or \"an entrance to a large cave\".${
-					surroundingBiomeDescription.prependIfNotEmpty(" \n") }$blockedDirectionsDescription",
+					surroundingBiomeDescription.prependIfNotEmpty(" \n") }$blockedDirectionsDescription Do not include additional commentary or area descriptions.",
 				systemMessage = setting.systemMessage)
-				.toQuery)
+				.toQuery,
+				options = Map(PredictTokens -> expectedBiomeTokens))
 			.mapSuccess { _.text }
 	}
 	
 	/**
 	 * Generates 3 options for the game's starting area and allows the player to choose one they like the best
-	 * @param gf The game's facilitator
+	 * @param designer The game's designer
 	 * @param setting Game's setting (implicit)
 	 * @param protagonist Game's protagonist (implicit)
 	 * @return Area selected by the user, plus a future that resolves into the number of exits to have in this area
 	 *         (or to a failure).
 	 *         None if no area was selected or if area-generation failed.
 	 */
-	def generateStartingBiome(gf: Gf)(implicit setting: GameSetting, protagonist: CharacterDescription) = {
-		implicit val designer: Gf = gf.withRole(Designer)
+	def generateStartingBiome()(implicit designer: Gf, setting: GameSetting, protagonist: CharacterDescription) =
+	{
 		println(s"\nLet's come up with a few possible starting locations for ${ protagonist.name }'s adventure...")
 		val options = ollama.generate(Prompt(
 			s"Come up with 3 different areas / local environments where this game could start. These are smaller areas, such as \"${
-				protagonist.name }'s home\", \"an entrance to an ancient city's remains\" or \"a small camp at the edge of a forest\". Select areas that are memorable and fit the game's general environment well. The selected areas should also facilitate storytelling, making an interesting start for the game and being somehow connected to ${
-				protagonist.name }'s story. Place each area on its own line and prefix each with its numeric index.",
-			systemMessage = setting.systemMessageIncludingProtagonist))
-			.tryFlatMapSuccess(parseIndexedList).waitForResult().getOrElseLog(Empty)
+				protagonist.name }'s home\", \"an entrance to an ancient city's remains\" or \"a small camp at the edge of a forest\". Select areas that are memorable and fit the game's general environment. The selected areas should also be somehow connected to ${
+				protagonist.name }. Place each area on its own line and prefix each with its numeric index. Keep each line within 30 words or less. Do not include additional area descriptions or commentary at this point.",
+			systemMessage = setting.systemMessageIncludingProtagonist),
+				options = Map(PredictTokens -> (expectedBiomeTokens * 6)))
+			.tryFlatMapSuccess(ollama.parseIndexedList).waitForResult().getOrElseLog(Empty)
 		
 		val areaDescription = NotEmpty(options) match {
 			// Allows the user to select the starting area, or to write their own
@@ -158,8 +169,9 @@ object WorldBuilder
 		// Also determines the number of exits
 		areaDescription.map { description =>
 			val exitCountFuture = ollama.generate(
-				"How many exits does it make sense to have in this area? Open areas, such as open fields, should have more exits (e.g. 3 or 4) while closed areas, such as rooms and passageways should have fewer (e.g. 1 or 2). Reply only with the number of exits. The number of exits must be a digit between 1 and 4 (inclusive).")
-				.tryFlatMapSuccess(extractInt)
+				"How many exits does it make sense to have in this area? Open areas, such as open fields, should have more exits (e.g. 3 or 4) while closed areas, such as rooms and passageways should have fewer (e.g. 1 or 2). Reply only with the number of exits. The number of exits must be a digit between 1 and 4 (inclusive).",
+					options = Map(PredictTokens -> 40))
+				.tryFlatMapSuccess(ollama.extractInt)
 			description -> exitCountFuture
 		}
 	}
@@ -168,7 +180,7 @@ object WorldBuilder
 	 * Generates the 1-4 areas surrounding the game's start location
 	 * @param startingBiome The biome of the starting area
 	 * @param startExitCount Number of exits leaving the starting area
-	 * @param gf Implicit game facilitator
+	 * @param designer Implicit game facilitator
 	 * @param setting Implicit game setting
 	 * @param protagonist Implicit game's protagonist
 	 * @return Information of the surrounding areas as a Vector.
@@ -181,7 +193,7 @@ object WorldBuilder
 	 *         Yields a failure if the generation process failed. May yield partial failures, also.
 	 */
 	def generateStartingMap(startingBiome: String, startExitCount: Int)
-	                       (implicit gf: Gf, setting: GameSetting, protagonist: CharacterDescription) =
+	                       (implicit designer: Gf, setting: GameSetting, protagonist: CharacterDescription) =
 	{
 		val unusedDirectionsIter = Random.shuffle(CompassDirection.values).iterator
 		val generatedBiomesMap = mutable.Map[CompassDirection, String]()
@@ -197,7 +209,7 @@ object WorldBuilder
 				val accessibleDirections = otherAccessibleDirections + returnDirection
 				
 				// Generates the biome
-				generateBiome(gf,
+				generateBiome(
 					Map(directionFromStart.opposite ->
 						Pair(startingBiome, generatedBiomesMap.getOrElse(returnDirection, ""))),
 					CompassDirection.valueSet -- accessibleDirections)
@@ -212,21 +224,38 @@ object WorldBuilder
 			.toTryCatch
 	}
 	
-	private def parseIndexedList(reply: OllamaResponse) = {
-		reply.printAsReceived()
-		reply.future
-			.mapIfSuccess {
-				_.text.linesIterator.filter { _.take(10).exists { _.isDigit } }
-					.map { line => line.drop(line.indexWhere { _.isDigit }).dropWhile { c => !c.isLetter } }
-					.toVector
-			}
-	}
-	
-	private def extractInt(reply: OllamaResponse) =
-		reply.future.tryMapIfSuccess { _.text.dropWhile { !_.isDigit }.takeWhile { _.isDigit }.tryInt }
-	
-	private def printAndReturn(reply: OllamaResponse) = {
-		reply.printAsReceived()
-		reply.future.mapIfSuccess { _.text }
-	}
+	/*
+				ollama.chat("Great. Come up with 5 alternative themes for this game. Keep the themes relatively short; E.g. \"Experiencing one's inability to right all the society's wrong s and relying on God's grace instead.\". Start each theme with its index and keep each theme on a separate line.",
+						themeMessageHistory,
+						options = Map(
+							PredictTokens -> (expectedThemeTokens * 5),
+							ContextTokens -> (genreContextSize + expectedThemeTokens * 5 + 200)))
+					.tryFlatMapSuccess(ollama.parseIndexedList).waitForResult().logToOption
+					.flatMap { themes =>
+						// Allowing the user to select from the available themes
+						val theme = themes.oneOrMany match {
+							case Left(only) =>
+								println(s"\n\n\nOkay. I finally figured it out. Here's the theme I came up with: $only.\nI Hope you like it.")
+								Some(only)
+							case Right(themes) =>
+								println("\n\nOkay. I came up with a couple themes. Please help me select the one that fits our game best.")
+								StdIn.selectFrom(themes.map { t => t -> (t.take(140).untilLast(".") + "...") }, "themes")
+						}
+						theme.flatMap { theme =>
+							// Describing the game world, also
+							println("\nOkay. Now we have a theme as well. Let me write a short world description next.")
+							ollama.chat("Describe this game's world / environment for me. Where are these events taking place? How is the culture? What kind of geographic environment is it? Are there some important factions culture- and story-wise? Present the description in a concise form that facilitates map design and story-writing. Do not include additional commentary.",
+									themeMessageHistory ++
+										Pair(User("Come up with a theme for this game"), Assistant(theme)),
+									options = Map(PredictTokens -> expectedWorldDescriptionTokens,
+										ContextTokens -> (genreContextSize + expectedThemeTokens +
+											expectedWorldDescriptionTokens + 500)))
+								.tryFlatMapSuccess { ollama.printAndReturnText(_, clean = true) }
+								.waitForResult().logToOption
+								.map { worldDescription =>
+									GameSetting(genre, theme, worldDescription)
+								}
+						}
+					}
+			}*/
 }

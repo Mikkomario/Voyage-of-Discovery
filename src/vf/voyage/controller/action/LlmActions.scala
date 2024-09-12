@@ -20,11 +20,11 @@ object LlmActions
 	 * Prompts the user to select one local Ollama model
 	 * @return Designator of the selected model. None if selection was canceled or if data-reading failed.
 	 */
-	def selectModel() = {
+	def selectModel(recommendation: String) = {
 		ollama.localModels.future.waitForResult() match {
 			case Response.Success(models: Seq[GeneralOllamaModelInfo], _, _) =>
-				println("Please select the model to use.")
-				println("Note: It is recommended to select a model that supports tools")
+				println("Please select a model for me to use.")
+				println(recommendation)
 				StdIn.selectFrom(models.map { m => LlmDesignator(m.name) -> modelLine(m) }, "models", maxListCount = 30)
 				
 			case f: RequestFailure =>
